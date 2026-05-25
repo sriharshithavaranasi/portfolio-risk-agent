@@ -2,38 +2,48 @@
 Entry point for the Portfolio Risk Briefing Agent.
 
 Pipeline:
-    load holdings → fetch prices → compute risk → fetch news → generate memo → save
+    load holdings → fetch prices → run agent loop → format + save memo
 """
 
+import argparse
+from datetime import date
+from pathlib import Path
+
 from agent.loader import load_portfolio
+from agent.memo import format_memo, generate_memo
 from agent.prices import fetch_prices
-from agent.risk import compute_risk_metrics
-from agent.news import fetch_news
-from agent.memo import generate_memo
 
 
 def run(portfolio_path: str = "data/portfolio.csv") -> None:
-    # TODO: add CLI argument parsing (argparse) so portfolio path can be passed at runtime
-
     print(f"Loading portfolio from {portfolio_path}...")
     holdings = load_portfolio(portfolio_path)
 
-    print("Fetching prices...")
+    print(f"Fetching prices for {len(holdings)} holdings...")
     prices = fetch_prices(holdings)
 
-    print("Computing risk metrics...")
-    metrics = compute_risk_metrics(holdings, prices)
+    print("Running risk agent...\n")
+    memo = generate_memo(holdings, prices)
 
-    print("Fetching news for top holdings...")
-    news = fetch_news(holdings)
+    text = format_memo(memo)
+    print(text)
 
-    print("Generating risk memo...")
-    memo = generate_memo(metrics, news)
+    _save_memo(text)
 
-    # TODO: save memo to outputs/ with a timestamp in the filename
-    print("\n--- MORNING RISK MEMO ---\n")
-    print(memo)
+
+def _save_memo(text: str) -> None:
+    output_dir = Path("outputs")
+    output_dir.mkdir(exist_ok=True)
+    path = output_dir / f"risk_brief_{date.today().isoformat()}.txt"
+    path.write_text(text, encoding="utf-8")
+    print(f"\nMemo saved to {path}")
 
 
 if __name__ == "__main__":
-    run()
+    parser = argparse.ArgumentParser(description="Portfolio Risk Briefing Agent")
+    parser.add_argument(
+        "--portfolio",
+        default="data/portfolio.csv",
+        help="Path to portfolio CSV or JSON file (default: data/portfolio.csv)",
+    )
+    args = parser.parse_args()
+    run(args.portfolio)

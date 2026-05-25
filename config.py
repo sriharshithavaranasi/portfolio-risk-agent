@@ -4,7 +4,8 @@ import os
 load_dotenv()
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-NEWS_API_KEY = os.getenv("NEWS_API_KEY")
+POLYGON_API_KEY   = os.getenv("POLYGON_API_KEY")    # preferred news provider
+NEWS_API_KEY      = os.getenv("NEWS_API_KEY")        # fallback news provider
 
 # Model to use for memo generation
 ANTHROPIC_MODEL = "claude-sonnet-4-6"
