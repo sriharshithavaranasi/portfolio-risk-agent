@@ -1,32 +1,144 @@
+# Portfolio Risk Briefing — Daily Automation
+#
+# Schedule: weekdays at 12:00 UTC
+#   = 7:00 AM EST (Nov–Mar)
+#   = 8:00 AM EDT (Mar–Nov)
+#
+# GitHub Actions cron is always UTC. There is no timezone-aware scheduler,
+# so the brief arrives 1 hour later during daylight saving time.
+# For a pre-market brief (NYSE opens 14:30 UTC / 9:30 AM ET) this is fine.
+#
+# Notifications (both optional — skip any secret you don't set):
+#   Slack  — set SLACK_WEBHOOK_URL secret
+#   Email  — set MAIL_SERVER, MAIL_USERNAME, MAIL_PASSWORD, MAIL_TO secrets
+
 name: Daily Risk Brief
 
 on:
   schedule:
-    # Runs at 7:00 AM UTC on weekdays (Mon–Fri)
-    - cron: "0 7 * * 1-5"
-  workflow_dispatch: # allow manual trigger from GitHub UI
+    - cron: "0 12 * * 1-5"
+  workflow_dispatch:            # run manually from the Actions tab at any time
+    inputs:
+      portfolio:
+        description: "Portfolio file path (relative to repo root)"
+        required: false
+        default: "data/portfolio.csv"
 
 jobs:
   generate-brief:
+    name: Generate & Deliver Risk Brief
     runs-on: ubuntu-latest
 
     steps:
+      # ── 1. Source ─────────────────────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      # ── 2. Python ─────────────────────────────────────────────────────────
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"           # caches the pip download cache across runs
 
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # ── 3. Generate brief ─────────────────────────────────────────────────
       - name: Run risk agent
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
-        run: python main.py
+          POLYGON_API_KEY:   ${{ secrets.POLYGON_API_KEY }}
+          NEWS_API_KEY:      ${{ secrets.NEWS_API_KEY }}
+        run: |
+          PORTFOLIO="${{ github.event.inputs.portfolio || 'data/portfolio.csv' }}"
+          python main.py --portfolio "$PORTFOLIO"
 
-      # TODO: add a step to email or Slack the memo output
-      # TODO: add a step to commit the memo to outputs/ as an artifact
+      # ── 4. Artifacts ──────────────────────────────────────────────────────
+      # Saves the .md and .html files so you can download them from the
+      # Actions run page for 30 days, even without Slack or email set up.
+      - name: Upload report artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: risk-brief-${{ github.run_id }}
+          path: outputs/
+          retention-days: 30
+
+      # ── 5. Slack (optional) ───────────────────────────────────────────────
+      # Set the SLACK_WEBHOOK_URL secret to enable this step.
+      # The step is skipped automatically if the secret is not configured.
+      - name: Post to Slack
+        if: ${{ secrets.SLACK_WEBHOOK_URL != '' }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          TODAY=$(date +%Y-%m-%d)
+          MD_FILE="outputs/risk_brief_${TODAY}.md"
+
+          if [ ! -f "$MD_FILE" ]; then
+            echo "No report file found at $MD_FILE — skipping Slack notification."
+            exit 0
+          fi
+
+          # Extract the first 60 lines for the Slack preview.
+          # Slack blocks have a 3000-char limit per text block.
+          PREVIEW=$(head -60 "$MD_FILE")
+
+          # Escape double quotes and backticks so the JSON payload is valid.
+          SAFE=$(echo "$PREVIEW" | sed 's/"/\\"/g' | sed "s/\`/\\\`/g")
+
+          curl --fail --silent --show-error -X POST "$SLACK_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"text\": \"*Portfolio Risk Brief — ${TODAY}*\",
+              \"blocks\": [
+                {
+                  \"type\": \"header\",
+                  \"text\": { \"type\": \"plain_text\", \"text\": \"📊 Morning Risk Brief — ${TODAY}\" }
+                },
+                {
+                  \"type\": \"section\",
+                  \"text\": { \"type\": \"mrkdwn\", \"text\": \"\`\`\`${SAFE}\`\`\`\" }
+                },
+                {
+                  \"type\": \"context\",
+                  \"elements\": [{
+                    \"type\": \"mrkdwn\",
+                    \"text\": \"Full report attached to <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|Actions run ${{ github.run_id }}>\"
+                  }]
+                }
+              ]
+            }"
+
+      # ── 6. Email (optional) ───────────────────────────────────────────────
+      # Set MAIL_SERVER, MAIL_USERNAME, MAIL_PASSWORD, and MAIL_TO secrets to enable.
+      # The HTML report is sent as the email body — renders correctly in Gmail,
+      # Apple Mail, and Outlook because all CSS is inline.
+      - name: Send email
+        if: ${{ secrets.MAIL_TO != '' }}
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.MAIL_SERVER }}
+          server_port:    587
+          username:       ${{ secrets.MAIL_USERNAME }}
+          password:       ${{ secrets.MAIL_PASSWORD }}
+          subject:        "Portfolio Risk Brief — ${{ github.run_id }}"
+          to:             ${{ secrets.MAIL_TO }}
+          from:           ${{ secrets.MAIL_USERNAME }}
+          html_body:      file://outputs/risk_brief_${{ env.TODAY }}.html
+          convert_markdown: false
+        env:
+          TODAY: ${{ steps.run-agent.outputs.today || '' }}
+
+      # ── 7. Failure alert ──────────────────────────────────────────────────
+      # If any step fails and Slack is configured, post an alert.
+      - name: Notify Slack on failure
+        if: ${{ failure() && secrets.SLACK_WEBHOOK_URL != '' }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          curl --fail --silent --show-error -X POST "$SLACK_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"text\": \"❌ Risk brief pipeline failed — <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View run>\"
+            }"
