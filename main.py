@@ -2,7 +2,7 @@
 Entry point for the Portfolio Risk Briefing Agent.
 
 Pipeline:
-    load holdings → fetch prices → run agent loop → format + save memo
+    load holdings → fetch prices → run agent loop → build report → save MD + HTML
 """
 
 import argparse
@@ -12,6 +12,7 @@ from pathlib import Path
 from agent.loader import load_portfolio
 from agent.memo import format_memo, generate_memo
 from agent.prices import fetch_prices
+from agent.report import build_report, render_html, render_markdown
 
 
 def run(portfolio_path: str = "data/portfolio.csv") -> None:
@@ -24,18 +25,29 @@ def run(portfolio_path: str = "data/portfolio.csv") -> None:
     print("Running risk agent...\n")
     memo = generate_memo(holdings, prices)
 
-    text = format_memo(memo)
-    print(text)
+    print("Building report...\n")
+    report = build_report(memo, holdings, prices)
 
-    _save_memo(text)
+    md   = render_markdown(report)
+    html = render_html(report)
+
+    print(format_memo(memo))
+    _save(md, html)
 
 
-def _save_memo(text: str) -> None:
-    output_dir = Path("outputs")
-    output_dir.mkdir(exist_ok=True)
-    path = output_dir / f"risk_brief_{date.today().isoformat()}.txt"
-    path.write_text(text, encoding="utf-8")
-    print(f"\nMemo saved to {path}")
+def _save(md: str, html: str) -> None:
+    out = Path("outputs")
+    out.mkdir(exist_ok=True)
+    today = date.today().isoformat()
+
+    md_path   = out / f"risk_brief_{today}.md"
+    html_path = out / f"risk_brief_{today}.html"
+
+    md_path.write_text(md,   encoding="utf-8")
+    html_path.write_text(html, encoding="utf-8")
+
+    print(f"Saved: {md_path}")
+    print(f"Saved: {html_path}")
 
 
 if __name__ == "__main__":
